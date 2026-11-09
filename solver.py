@@ -5,7 +5,6 @@ import time
 from camoufox.async_api import AsyncCamoufox
 from PIL import Image
 
-# URL dan Sitekey disesuaikan dengan halaman registrasi DNSHE
 URL = "https://my.dnshe.com/register.php?language=english"
 SITEKEY = "0x4AAAAAACEqUetzorNQQ_pi" 
 
@@ -74,73 +73,80 @@ def find_checkbox(path, rx0, ry0, rx1, ry1, thr=215):
         return ((a + b) // 2, (top + bot) // 2)
     return None
 
-async def _solve_once(attempts=2, max_wait=200):
+async def _solve_once(max_wait=60):
+    # Cek proxy dari environment (opsional)
+    proxy_url = os.environ.get("PROXY_URL", "")
+    proxy_opt = {"server": proxy_url} if proxy_url else None
+    
     print("[ts] Memulai browser Camoufox...", flush=True)
-    async with AsyncCamoufox(headless=False, humanize=True) as browser:
+    async with AsyncCamoufox(headless=False, humanize=True, proxy=proxy_opt) as browser:
         ctx = await browser.new_context(viewport={"width": 1440, "height": 900}, locale="en-US")
         page = await ctx.new_page()
-        for att in range(1, attempts + 1):
-            try:
-                print(f"[ts] Attempt {att}: Membuka {URL}", flush=True)
-                await page.goto(URL, wait_until="domcontentloaded", timeout=60000)
-            except Exception as e:
-                print(f"[ts] goto err {type(e).__name__}", flush=True)
-                continue
+        
+        # Hanya buka satu kali
+        try:
+            print(f"[ts] Membuka {URL}", flush=True)
+            await page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            print(f"[ts] Gagal membuka halaman: {type(e).__name__}", flush=True)
+            return ""
+        
+        await asyncio.sleep(8)
+        rect = await page.evaluate(RECT_JS)
+        print(f"[ts] Posisi Widget: {rect}", flush=True)
+        
+        if not rect:
+            print("[ts] Widget Turnstile tidak ditemukan.", flush=True)
+            await page.screenshot(path=SHOT)
+            return ""
             
-            await asyncio.sleep(8)
-            rect = await page.evaluate(RECT_JS)
-            print(f"[ts] attempt {att}: rect={rect}", flush=True)
-            if not rect:
-                continue
+        t0 = time.time()
+        clicked = False
+        
+        # Loop waktu tunggu (maksimal 60 detik)
+        while time.time() - t0 < max_wait:
+            await asyncio.sleep(5)
+            
+            tok = await page.evaluate(TOKEN_JS)
+            if tok:
+                print(f"[ts] ✅ SUKSES! Token didapat setelah {time.time()-t0:.0f} detik.", flush=True)
+                return tok
+            
+            await page.screenshot(path=SHOT)
+            fb = find_checkbox(SHOT, rect["x"] - 8, rect["y"] + 2,
+                               rect["x"] + 45, rect["y"] + rect["h"] - 2)
+            
+            print(f"[ts] Waktu: {time.time()-t0:.0f}s | Deteksi Kotak: {fb}", flush=True)
+            
+            # Hanya klik jika kotak ditemukan dan belum pernah diklik
+            if fb and not clicked:
+                cx, cy = fb
+                print(f"[ts] 🖱️ Mengklik kotak di ({cx}, {cy})...", flush=True)
+                await page.mouse.move(cx - 16, cy + 9)
+                await asyncio.sleep(0.45)
+                await page.mouse.move(cx - 6, cy + 4)
+                await asyncio.sleep(0.35)
+                await page.mouse.move(cx, cy)
+                await asyncio.sleep(0.3)
+                await page.mouse.down(); await asyncio.sleep(0.14); await page.mouse.up()
+                clicked = True
                 
-            t0 = time.time()
-            clicked = False
-            while time.time() - t0 < max_wait:
-                await asyncio.sleep(8)
-                tok = await page.evaluate(TOKEN_JS)
-                if tok:
-                    print(f"[ts] TOKEN OK ({len(tok)} ch) setelah {time.time()-t0:.0f}s", flush=True)
-                    return tok
-                
-                await page.screenshot(path=SHOT)
-                # area kiri widget (checkbox ada di sisi kiri panel)
-                fb = find_checkbox(SHOT, rect["x"] - 8, rect["y"] + 2,
-                                   rect["x"] + 45, rect["y"] + rect["h"] - 2)
-                print(f"[ts] t={time.time()-t0:.0f}s cb={fb}", flush=True)
-                
-                if fb and not clicked:
-                    cx, cy = fb
-                    print(f"[ts] KLIK checkbox ({cx},{cy})", flush=True)
-                    await page.mouse.move(cx - 16, cy + 9)
-                    await asyncio.sleep(0.45)
-                    await page.mouse.move(cx - 6, cy + 4)
-                    await asyncio.sleep(0.35)
-                    await page.mouse.move(cx, cy)
-                    await asyncio.sleep(0.3)
-                    await page.mouse.down(); await asyncio.sleep(0.14); await page.mouse.up()
-                    clicked = True
-                    await asyncio.sleep(5)
-                elif fb and clicked:
-                    # klik ulang (mis. challenge gagal)
-                    cx, cy = fb
-                    await page.mouse.click(cx, cy)
-                    await asyncio.sleep(5)
-                    
-        # Simpan screenshot terakhir sebelum browser ditutup (jika gagal)
+        print(f"[ts] ❌ GAGAL. Waktu {max_wait} detik habis.", flush=True)
         await page.screenshot(path=SHOT)
-    return ""
+        return ""
 
-def solve(attempts=2, max_wait=200) -> str:
-    tok = asyncio.run(_solve_once(attempts, max_wait))
+def solve(max_wait=60) -> str:
+    tok = asyncio.run(_solve_once(max_wait))
     if tok:
         with open(os.path.join(OUT, "tokens.txt"), "a") as f:
             f.write(tok + "\n")
     return tok
 
 if __name__ == "__main__":
-    print("=== MEMULAI PROSES BYPASS TURNSTILE ===", flush=True)
-    token = solve()
+    print("=== MEMULAI PROSES BYPASS (SINGLE ATTEMPT) ===", flush=True)
+    token = solve(max_wait=60) 
+    
     if token:
-        print(f"=== SUKSES! TOKEN DIDAPATKAN: {token[:30]}... ===", flush=True)
+        print(f"=== ✅ SUKSES! TOKEN: {token[:30]}... ===", flush=True)
     else:
-        print("=== GAGAL MENDAPATKAN TOKEN ===", flush=True)
+        print("=== ❌ GAGAL MENDAPATKAN TOKEN ===", flush=True)
