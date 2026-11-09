@@ -1,0 +1,45 @@
+name: Test DNSHE Turnstile Bypass
+
+on:
+  workflow_dispatch: # Memungkinkan eksekusi manual lewat tab "Actions" di GitHub
+
+jobs:
+  run-solver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # Maksimal 15 menit untuk mencegah infinite loop
+
+    steps:
+      - name: 1. Checkout Repositori
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 3. Install Dependensi
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 4. Download Camoufox Browser
+        run: |
+          # Perintah wajib untuk mengunduh browser Camoufox sebelum digunakan
+          python -m camoufox fetch
+
+      - name: 5. Jalankan Script (Menggunakan Xvfb)
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          # xvfb-run membuat layar virtual karena GitHub Actions tidak punya monitor fisik.
+          # Script menggunakan headless=False, sehingga sangat butuh ini.
+          xvfb-run --auto-servernum --server-args="-screen 0 1440x900x24" python solver.py
+
+      - name: 6. Upload Screenshot & Token ke Artefak
+        if: always() # Tetap jalankan step ini meskipun script gagal atau timeout
+        uses: actions/upload-artifact@v4
+        with:
+          name: turnstile-bypass-result
+          path: out/
+          retention-days: 3
