@@ -34,7 +34,7 @@ def _gray(v):
     return sum(v) / 3.0
 
 def find_checkbox(path, rx0, ry0, rx1, ry1, thr=215):
-    """cari kotak centang: persegi ber-border gelap, interior terang."""
+    # (Kode deteksi kotak centang tetap sama)
     im = Image.open(path).convert("RGB")
     W, H = im.size
     px = im.load()
@@ -73,8 +73,29 @@ def find_checkbox(path, rx0, ry0, rx1, ry1, thr=215):
         return ((a + b) // 2, (top + bot) // 2)
     return None
 
+# --- FUNGSI BARU: DETEKSI WARNA HIJAU ---
+def check_green_success(path, rx0, ry0, rx1, ry1):
+    """Mendeteksi apakah ada lingkaran hijau (centang sukses) di area widget."""
+    im = Image.open(path).convert("RGB")
+    W, H = im.size
+    px = im.load()
+    x0, x1 = max(0, int(rx0)), min(W, int(rx1))
+    y0, y1 = max(0, int(ry0)), min(H, int(ry1))
+    
+    green_pixels = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            r, g, b = px[x, y]
+            # Deteksi warna hijau Cloudflare: G tinggi, R dan B rendah
+            if g > 100 and r < 100 and b < 100:
+                green_pixels += 1
+                
+    # Jika ada lebih dari 50 piksel hijau, anggap sukses (centang muncul)
+    if green_pixels > 50:
+        return True
+    return False
+
 async def _solve_once(max_wait=60):
-    # Cek proxy dari environment (opsional)
     proxy_url = os.environ.get("PROXY_URL", "")
     proxy_opt = {"server": proxy_url} if proxy_url else None
     
@@ -83,7 +104,6 @@ async def _solve_once(max_wait=60):
         ctx = await browser.new_context(viewport={"width": 1440, "height": 900}, locale="en-US")
         page = await ctx.new_page()
         
-        # Hanya buka satu kali
         try:
             print(f"[ts] Membuka {URL}", flush=True)
             await page.goto(URL, wait_until="domcontentloaded", timeout=60000)
@@ -103,22 +123,27 @@ async def _solve_once(max_wait=60):
         t0 = time.time()
         clicked = False
         
-        # Loop waktu tunggu (maksimal 60 detik)
         while time.time() - t0 < max_wait:
             await asyncio.sleep(5)
             
+            # 1. Cek via Token DOM (Paling Akurat)
             tok = await page.evaluate(TOKEN_JS)
             if tok:
-                print(f"[ts] ✅ SUKSES! Token didapat setelah {time.time()-t0:.0f} detik.", flush=True)
+                print(f"[ts] ✅ SUKSES (Token didapat) setelah {time.time()-t0:.0f} detik.", flush=True)
                 return tok
             
+            # 2. Cek via Visual (Warna Hijau)
             await page.screenshot(path=SHOT)
-            fb = find_checkbox(SHOT, rect["x"] - 8, rect["y"] + 2,
-                               rect["x"] + 45, rect["y"] + rect["h"] - 2)
+            if check_green_success(SHOT, rect["x"], rect["y"], rect["x"] + rect["w"], rect["y"] + rect["h"]):
+                print(f"[ts] 🟢 SUKSES (Centang Hijau terdeteksi visual) setelah {time.time()-t0:.0f} detik.", flush=True)
+                # Karena visual hijau, kita tetap coba ambil tokennya
+                tok = await page.evaluate(TOKEN_JS)
+                return tok if tok else "VISUAL_SUCCESS_TOKEN_NOT_FOUND"
             
+            # 3. Jika belum sukses, cari kotak centang dan klik
+            fb = find_checkbox(SHOT, rect["x"] - 8, rect["y"] + 2, rect["x"] + 45, rect["y"] + rect["h"] - 2)
             print(f"[ts] Waktu: {time.time()-t0:.0f}s | Deteksi Kotak: {fb}", flush=True)
             
-            # Hanya klik jika kotak ditemukan dan belum pernah diklik
             if fb and not clicked:
                 cx, cy = fb
                 print(f"[ts] 🖱️ Mengklik kotak di ({cx}, {cy})...", flush=True)
@@ -137,7 +162,7 @@ async def _solve_once(max_wait=60):
 
 def solve(max_wait=60) -> str:
     tok = asyncio.run(_solve_once(max_wait))
-    if tok:
+    if tok and tok != "VISUAL_SUCCESS_TOKEN_NOT_FOUND":
         with open(os.path.join(OUT, "tokens.txt"), "a") as f:
             f.write(tok + "\n")
     return tok
